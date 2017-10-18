@@ -51,6 +51,14 @@ if(${LIBOMP_USE_HWLOC})
   include_directories(${LIBOMP_HWLOC_INSTALL_DIR}/include)
 endif()
 
+# Set all necessary things for PMIX
+include_directories(${PMIX_INCLUDE_DIR})
+link_directories(${PATH_TO_PMIX}/lib)
+#SET(GCC_COVERAGE_COMPILE_FLAGS "-lpmix")
+#add_definitions(${GCC_COVERAGE_COMPILE_FLAGS})
+#SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${GCC_COVERAGE_COMPILE_FLAGS}")
+#SET(CMAKE_EXE_LINKER_FLAFS "${CMAKE_EXE_LINKER_FLAFS} ${GCC_COVERAGE_COMPILE_FLAGS}")
+
 # Getting correct source files to build library
 set(LIBOMP_CFILES)
 set(LIBOMP_CXXFILES)
@@ -132,7 +140,7 @@ endif()
 # We neither need (nor want) the standard C++ library dependency even though we compile c++ files.
 if(NOT ${LIBOMP_USE_STDCPPLIB})
   set(LIBOMP_LINKER_LANGUAGE C)
-  set(CMAKE_CXX_IMPLICIT_LINK_LIBRARIES)
+  set(CMAKE_CXX_IMPLICIT_LINK_LIBRARIES "${CMAKE_CXX_IMPLICIT_LINK_LIBRARIES} -L${PMIX_LIBRARY_DIR} -lpmix")
 else()
   set(LIBOMP_LINKER_LANGUAGE CXX)
 endif()

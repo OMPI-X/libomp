@@ -27,6 +27,8 @@
 #include "kmp_wait_release.h"
 #include "kmp_wrapper_getpid.h"
 
+#include <pmix.h>
+
 #if OMPT_SUPPORT
 #include "ompt-specific.h"
 #endif
@@ -3108,6 +3110,7 @@ static void __kmp_initialize_root(kmp_root_t *root) {
   kmp_internal_control_t r_icvs = __kmp_get_global_icvs();
   KMP_DEBUG_ASSERT(root);
   KMP_ASSERT(!root->r.r_begin);
+  pmix_proc_t myproc;
 
   /* setup the root state structure */
   __kmp_init_lock(&root->r.r_begin_lock);
@@ -4459,6 +4462,7 @@ __kmp_set_thread_affinity_mask_full_tmp(kmp_affin_mask_t *old_mask) {
 // thread's partition, and binds each worker to a thread in their partition.
 // The master thread's partition should already include its current binding.
 static void __kmp_partition_places(kmp_team_t *team, int update_master_only) {
+  // GV: Sounds like a place where we could get data from PMIx so we can define places being aware of MPI
   // Copy the master thread's place partion to the team struct
   kmp_info_t *master_th = team->t.t_threads[0];
   KMP_DEBUG_ASSERT(master_th != NULL);
@@ -6150,6 +6154,7 @@ void __kmp_register_library_startup(void) {
 
   char *name = __kmp_reg_status_name(); // Name of the environment variable.
   int done = 0;
+  pmix_proc_t myproc;
   union {
     double dtime;
     long ltime;
@@ -6165,6 +6170,8 @@ void __kmp_register_library_startup(void) {
 
   KA_TRACE(50, ("__kmp_register_library_startup: %s=\"%s\"\n", name,
                 __kmp_registration_str));
+
+  PMIx_Init (&myproc, NULL, 0);
 
   while (!done) {
 
@@ -6262,6 +6269,7 @@ void __kmp_unregister_library(void) {
   __kmp_registration_flag = 0;
   __kmp_registration_str = NULL;
 
+  PMIx_Finalize (NULL, 0);
 } // __kmp_unregister_library
 
 // End of Library registration stuff.
