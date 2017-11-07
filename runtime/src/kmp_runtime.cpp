@@ -66,6 +66,146 @@ char const __kmp_version_lock[] =
 #define KMP_MIN(x, y) ((x) < (y) ? (x) : (y))
 
 /* ------------------------------------------------------------------------ */
+/* PMIx specific data structures, constants, global vars and functions */
+
+#define PMIX_PROGRAMMING_MODEL      "pmix.pgm.model"        // (char*) programming model being initialized (e.g., "MPI" or "OpenMP")
+#define PMIX_MODEL_LIBRARY_NAME     "pmix.mdl.name"         // (char*) programming model implementation ID (e.g., "OpenMPI" or "MPICH")
+#define PMIX_MODEL_LIBRARY_VERSION  "pmix.mld.vrs"          // (char*) programming model version string (e.g., "2.1.1")
+#define PMIX_THREADING_MODEL        "pmix.threads"          // (char*) threading model used (e.g., "pthreads")
+#define DUMMY_VALUE                 "dummyvalue"
+
+typedef struct {
+    pthread_mutex_t mutex;
+    pthread_cond_t cond;
+    volatile bool active;
+} libomp_lock_t;
+
+pmix_status_t code = PMIX_MODEL_DECLARED;
+static libomp_lock_t thread_complete;
+
+/* Equivalent of OPAL_ACQUIRE_OBJECT */
+#define LIBOMP_ACQUIRE_OBJECT(o)    do {} while (0)
+
+/* Equivalent of OPAL_POST_OBJECT */
+#define LIBOMP_POST_OBJECT(o)   do {} while (0)
+
+/* Equivalent of OPAL_PMIX_WAIT_THREAD */
+#define LIBOMP_WAIT_THREAD(lck) do {                        \
+    pthread_mutex_lock (&(lck)->mutex);                     \
+    while ((lck)->active) {                                 \
+        pthread_cond_wait (&(lck)->cond, &(lck)->mutex);    \
+    }                                                       \
+    LIBOMP_ACQUIRE_OBJECT(lck);                             \
+    pthread_mutex_unlock (&(lck)->mutex);                   \
+} while (0)
+
+/* Equivalent of OPAL_PMIX_WAKEUP_THREAD */
+#define LIBOMP_WAKEUP_THREAD(lck) do {                      \
+    pthread_mutex_lock (&(lck)->mutex);                     \
+    (lck)->active = false;                                  \
+    LIBOMP_POST_OBJECT (lck);                               \
+    pthread_cond_broadcast(&(lck)->cond);                   \
+    pthread_mutex_unlock (&(lck)->mutex);                   \
+} while (0)
+
+/* Equivalent of OPAL_PMIX_CONSTRUCT_LOCK */
+#define LIBOMP_CONSTRUCT_LOCK(l) do {                       \
+    pthread_mutex_init (&(l)->mutex, NULL);                 \
+    pthread_cond_init (&(l)->cond, NULL);                   \
+    (l)->active = true;                                     \
+    LIBOMP_POST_OBJECT((l));                                \
+} while (0)
+
+/* Equivalent of OPAL_PMIX_DESTRUCT_LOCK */
+#define LIBOMP_DESTRUCT_LOCK(l) do {                        \
+    LIBOMP_ACQUIRE_OBJECT(l);                               \
+    pthread_mutex_destroy (&(l)->mutex);                     \
+    pthread_cond_destroy (&(l)->cond);                      \
+} while (0)
+
+typedef struct {
+    char                *key;
+    pmix_data_type_t    type;
+    union {
+        bool flag;
+        uint8_t byte;
+        char *string;
+        size_t size;
+        pid_t pid;
+        int integer;
+        int8_t int8;
+        int16_t int16;
+        int32_t int32;
+        int64_t int64;
+        unsigned int uint;
+        uint8_t uint8;
+        uint16_t uint16;
+        uint32_t uint32;
+        uint64_t uint64;
+        float fval;
+        double dval;
+        struct timeval tv;
+        time_t time;
+        void *ptr;  // never packed or passed anywhere
+    } data;
+} libomp_pmix_value_t;
+
+typedef struct {
+    pmix_info_t *info;
+    size_t      ninfo;
+    int         *active;
+    char        *nspace;
+} mydata_t;
+
+static void evthdl_fn (size_t evhdlr_registration_id,
+                       pmix_status_t status,
+                       const pmix_proc_t *source,
+                       pmix_info_t info[], size_t ninfo,
+                       pmix_info_t results[], size_t nresults,
+                       pmix_event_notification_cbfunc_fn_t cbfunc,
+                       void *cbdata)
+{
+    int i;
+
+    fprintf (stdout, "Number of info keys: %d\n", ninfo);
+    for (i = 0; i < ninfo; i++)
+    {
+        if (strcmp (info[i].key, "pmix.pgm.model") == 0 ||
+            strcmp (info[i].key, "pmix.mdl.name") == 0 ||
+            strcmp (info[i].key, "pmix.mld.vrs") == 0 ||
+            strcmp (info[i].key, "pmix.threads") == 0)
+        {
+            fprintf (stdout, "[%s:%s:%d] Key: %s/%s\n", __FILE__, __func__, __LINE__, info[i].key, info[i].value.data.string);
+        }
+        else
+        {
+            fprintf (stdout, "[%s:%s:%d] Key: %s\n", __FILE__, __func__, __LINE__, info[i].key);
+        }
+    }
+
+    /* tell the event handler state machine that we are the last step */
+    if (NULL != cbfunc) {
+        cbfunc(PMIX_EVENT_ACTION_COMPLETE, NULL, 0, NULL, NULL, cbdata);
+    }
+
+    /* do whatever we want/need to do to coordinate */
+
+    LIBOMP_WAKEUP_THREAD (&thread_complete);
+}
+
+static void
+evhandler_reg_callbk (pmix_status_t status, size_t evhandler_ref, void *cbdata)
+{
+    char            *prog_model = NULL;
+    pmix_proc_t     proc;
+    pmix_value_t    *val        = NULL;
+    pmix_rank_t     npeers;
+    libomp_lock_t   *lock = (libomp_lock_t*)cbdata;
+
+    LIBOMP_WAKEUP_THREAD (lock);
+}
+
+/* ------------------------------------------------------------------------ */
 
 kmp_info_t __kmp_monitor;
 
@@ -6154,7 +6294,6 @@ void __kmp_register_library_startup(void) {
 
   char *name = __kmp_reg_status_name(); // Name of the environment variable.
   int done = 0;
-  pmix_proc_t myproc;
   union {
     double dtime;
     long ltime;
@@ -6171,7 +6310,83 @@ void __kmp_register_library_startup(void) {
   KA_TRACE(50, ("__kmp_register_library_startup: %s=\"%s\"\n", name,
                 __kmp_registration_str));
 
-  PMIx_Init (&myproc, NULL, 0);
+  {
+    int                 rc;
+    pmix_proc_t         myproc;
+    mydata_t            *omp_data;
+    char                *omp_model      = "OpenMP";
+    char                *omp_modelname  = "LLVM";
+    char                *omp_version    = "50";
+    size_t              nq              = 1;
+    pmix_query_t        *q              = NULL;
+    pmix_pdata_t        *pdata;
+    pmix_proc_t         proc;
+    pmix_value_t        value;
+    pmix_value_t        *val = &value;
+    char                *pmix_code      = "pmix.evname";
+    pmix_status_t       *pcodes;
+    size_t              ncodes          = 1;
+    libomp_pmix_value_t *directives;
+    size_t              ndirectives     = 1;
+    pmix_info_t         *reginfo;
+    size_t              nreginfo        = 1;
+    char                *dummy_value    = "dummyvalue";
+    pmix_info_t         *lookup_info;
+    size_t              n_lookup_info   = 1;
+    libomp_lock_t       lock;
+    char                *mpi_key        = "MPI-Model-Declarations";
+
+    /* GV: Free this at some point? */
+    LIBOMP_CONSTRUCT_LOCK (&thread_complete);
+
+    omp_data = (mydata_t*) malloc (sizeof (mydata_t));
+    omp_data->ninfo = 4;
+    PMIX_INFO_CREATE (omp_data->info, omp_data->ninfo);
+    PMIX_INFO_LOAD (&omp_data->info[0], PMIX_PROGRAMMING_MODEL, omp_model, PMIX_STRING);
+    PMIX_INFO_LOAD (&omp_data->info[1], PMIX_MODEL_LIBRARY_NAME, omp_modelname, PMIX_STRING);
+    PMIX_INFO_LOAD (&omp_data->info[2], PMIX_MODEL_LIBRARY_VERSION, omp_version, PMIX_STRING);
+    PMIX_INFO_LOAD (&omp_data->info[3], PMIX_THREADING_MODEL, "openmp", PMIX_STRING);
+
+    /* Initialize PMIx - Note that we always call PMIx_Init() because it is safe and also
+       because otherwise we would need the pmix_proc_t structure that is available only in
+       the context of Open MPI. */
+    {
+        omp_data = (mydata_t*) malloc (sizeof (mydata_t));
+        omp_data->ninfo = 4;
+        PMIX_INFO_CREATE (omp_data->info, omp_data->ninfo);
+        PMIX_INFO_LOAD (&omp_data->info[0], PMIX_PROGRAMMING_MODEL, omp_model, PMIX_STRING);
+        PMIX_INFO_LOAD (&omp_data->info[1], PMIX_MODEL_LIBRARY_NAME, omp_modelname, PMIX_STRING);
+        PMIX_INFO_LOAD (&omp_data->info[2], PMIX_MODEL_LIBRARY_VERSION, omp_version, PMIX_STRING);
+        PMIX_INFO_LOAD (&omp_data->info[3], PMIX_THREADING_MODEL, "openmp", PMIX_STRING);
+        rc = PMIx_Init (&myproc, omp_data->info, omp_data->ninfo);
+        if (rc != PMIX_SUCCESS)
+        {
+            fprintf (stderr, "[%s:%s:%d] PMIx_Init() failed (%d)\n", __FILE__, __func__, __LINE__, rc);
+        }
+    }
+
+    /* The following code could be simplified but reflect the Open MPI code to minimize
+       the risk of misusing APIs and data structures. */
+    directives = (libomp_pmix_value_t*) malloc (ndirectives * sizeof (libomp_pmix_value_t));
+    directives[0].key           = strdup (pmix_code);
+    directives[0].type          = PMIX_STRING;
+    directives[0].data.string   = strdup ("MPI-Model-Declarations");
+
+    pcodes = (pmix_status_t*) malloc (ncodes * sizeof (pmix_status_t));
+    pcodes[0] = directives[0].data.integer;
+
+    /* Just a place holder */
+    PMIX_INFO_CREATE (reginfo, nreginfo);
+    PMIX_INFO_LOAD (&reginfo[0], DUMMY_VALUE, "status", PMIX_STRING);
+
+    LIBOMP_CONSTRUCT_LOCK (&lock);
+    PMIx_Register_event_handler (&code, 1, reginfo, nreginfo, evthdl_fn, evhandler_reg_callbk, (void*)&lock);
+    LIBOMP_WAIT_THREAD (&lock);
+    LIBOMP_DESTRUCT_LOCK (&lock);
+
+    /* Wait fot the model callback */
+    LIBOMP_WAIT_THREAD (&thread_complete);
+  }
 
   while (!done) {
 
