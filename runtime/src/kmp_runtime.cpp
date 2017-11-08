@@ -82,6 +82,12 @@ typedef struct {
 
 pmix_status_t code = PMIX_MODEL_DECLARED;
 static libomp_lock_t thread_complete;
+static bool _n_local_ranks_set = false;
+static bool _n_local_cpus_set = false;
+static int _n_local_ranks = 0;
+static int _n_local_cpus = 0;
+static char *_policy_threadspan;
+static bool _policy_threadspan_set = false;
 
 /* Equivalent of OPAL_ACQUIRE_OBJECT */
 #define LIBOMP_ACQUIRE_OBJECT(o)    do {} while (0)
@@ -1762,12 +1768,20 @@ int __kmp_fork_call(ident_t *loc, int gtid,
       int enter_teams = ((ap == NULL && active_level == 0) ||
                          (ap && teams_level > 0 && teams_level == level));
 #endif
-      nthreads =
+      if (_n_local_ranks_set == true && _n_local_cpus_set == true &&
+          _policy_threadspan_set == true && strcmp (_policy_threadspan, "max") == 0)
+      {
+        nthreads = _n_local_cpus / _n_local_ranks - 1;
+      }
+      else
+      {
+        nthreads =
           master_set_numthreads
               ? master_set_numthreads
               : get__nproc_2(
                     parent_team,
                     master_tid); // TODO: get nproc directly from current task
+      }
 
       // Check if we need to take forkjoin lock? (no need for serialized
       // parallel out of teams construct). This code moved here from
@@ -6317,12 +6331,7 @@ void __kmp_register_library_startup(void) {
     char                *omp_model      = "OpenMP";
     char                *omp_modelname  = "LLVM";
     char                *omp_version    = "50";
-    size_t              nq              = 1;
-    pmix_query_t        *q              = NULL;
-    pmix_pdata_t        *pdata;
     pmix_proc_t         proc;
-    pmix_value_t        value;
-    pmix_value_t        *val = &value;
     char                *pmix_code      = "pmix.evname";
     pmix_status_t       *pcodes;
     size_t              ncodes          = 1;
@@ -6330,9 +6339,6 @@ void __kmp_register_library_startup(void) {
     size_t              ndirectives     = 1;
     pmix_info_t         *reginfo;
     size_t              nreginfo        = 1;
-    char                *dummy_value    = "dummyvalue";
-    pmix_info_t         *lookup_info;
-    size_t              n_lookup_info   = 1;
     libomp_lock_t       lock;
     char                *mpi_key        = "MPI-Model-Declarations";
 
@@ -6391,17 +6397,17 @@ void __kmp_register_library_startup(void) {
     free (pcodes);
     PMIX_INFO_FREE (reginfo, nreginfo);
 
+    PMIX_PROC_CONSTRUCT (&proc);
+    (void)strncpy (proc.nspace, myproc.nspace, PMIX_MAX_NSLEN);
+    proc.rank = PMIX_RANK_WILDCARD;
+
+    /* Ensure all data is received */
+    PMIx_Fence (&proc, 1, NULL, 0);
+
     /* Get the number of procs in this job on this node */
     {
         uint32_t        nprocs;
-        pmix_proc_t     proc;
         pmix_value_t    *_val;
-
-        /* Ensure the data is received */
-        PMIX_PROC_CONSTRUCT (&proc);
-        (void)strncpy (proc.nspace, myproc.nspace, PMIX_MAX_NSLEN);
-        proc.rank = PMIX_RANK_WILDCARD;
-        PMIx_Fence (&proc, 1, NULL, 0);
 
         rc = PMIx_Get (&proc, PMIX_LOCAL_SIZE, NULL, 0, &_val);
         if (rc != PMIX_SUCCESS)
@@ -6416,8 +6422,83 @@ void __kmp_register_library_startup(void) {
             }
             else
             {
-                fprintf (stderr, "[%s:%s:%d] %d job procs are running on the node\n", __FILE__, __func__, __LINE__, (int)(_val->data.uint32));
+                //fprintf (stderr, "[%s:%s:%d] %d job procs are running on the node\n", __FILE__, __func__, __LINE__, (int)(_val->data.uint32));
+                _n_local_ranks = (int)(_val->data.uint32);
+                _n_local_ranks_set = true;
             }
+        }
+    }
+
+#if 0
+    /* Get the local cpuset */
+    {
+        char            *local_cpusets;
+        pmix_value_t    *_val;
+
+        rc = PMIx_Get (&proc, PMIX_LOCAL_CPUSETS, NULL, 0, &_val);
+        if (rc != PMIX_SUCCESS)
+        {   
+            fprintf (stderr, "[%s:%s:%d:%d] PMIx_Get() failed (%d)\n", __FILE__, __func__, __LINE__, getpid(), rc);
+        }
+        else
+        {   
+            if (_val->type != PMIX_STRING)
+            {
+                fprintf (stderr, "[%s:%s:%d] ERROR: Incorrect type\n", __FILE__, __func__, __LINE__);
+            }
+            else
+            {   
+                fprintf (stderr, "[%s:%s:%d] local cpusets: %s\n", __FILE__, __func__, __LINE__, _val->data.string);
+            }
+        }
+    }
+#endif
+
+    {
+        int numCPU;
+        pmix_pdata_t    *lookup_pdata;
+        pmix_info_t     *lookup_info;
+
+        PMIX_PDATA_CREATE (lookup_pdata, 1);
+        (void)strncpy(lookup_pdata[0].key, "moc.ncpus", PMIX_MAX_KEYLEN);
+
+        PMIX_INFO_CREATE (lookup_info, 1);
+        PMIX_INFO_LOAD (&lookup_info[0], PMIX_WAIT, 0, PMIX_INT);
+
+        rc = PMIx_Lookup (lookup_pdata, 1, lookup_info, 1);
+        if (rc != PMIX_SUCCESS)
+        {
+            fprintf (stderr, "[%s:%s:%d:%d] PMIx_Lookup() failed (%d)\n", __FILE__, __func__, __LINE__, getpid(), rc);
+        }
+        else
+        {
+            //fprintf (stderr, "[%s:%s:%d] Ncpus: %d\n", __FILE__, __func__, __LINE__, (int)lookup_pdata[0].value.data.uint8);
+            _n_local_cpus = (int)lookup_pdata[0].value.data.uint8;
+            _n_local_cpus_set = true;
+        }
+    }
+
+    {
+        char            *policy;
+        pmix_pdata_t    *lookup_pdata;
+        pmix_info_t     *lookup_info;
+
+        PMIX_PDATA_CREATE (lookup_pdata, 1);
+        (void)strncpy(lookup_pdata[0].key, "moc.policy.threadspan", PMIX_MAX_KEYLEN);
+
+        PMIX_INFO_CREATE (lookup_info, 1);
+        PMIX_INFO_LOAD (&lookup_info[0], PMIX_WAIT, 0, PMIX_INT);
+
+        rc = PMIx_Lookup (lookup_pdata, 1, lookup_info, 1);
+        if (rc != PMIX_SUCCESS)
+        {
+            fprintf (stderr, "[%s:%s:%d:%d] PMIx_Lookup() failed (%d)\n", __FILE__, __func__, __LINE__, getpid(), rc);
+        }
+        else
+        {
+            //fprintf (stderr, "[%s:%s:%d] Ncpus: %d\n", __FILE__, __func__, __LINE__, (int)lookup_pdata[0].value.data.uint8);
+            _policy_threadspan = strdup (lookup_pdata[0].value.data.string);
+            _policy_threadspan_set = true;
         }
     }
   }
@@ -6518,6 +6599,12 @@ void __kmp_unregister_library(void) {
   __kmp_registration_flag = 0;
   __kmp_registration_str = NULL;
 
+  if (_policy_threadspan != NULL)
+  {
+    free (_policy_threadspan);
+    _policy_threadspan = NULL;
+    _policy_threadspan_set = false;
+  }
   PMIx_Finalize (NULL, 0);
 } // __kmp_unregister_library
 
