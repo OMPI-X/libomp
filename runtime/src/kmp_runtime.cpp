@@ -6386,6 +6386,40 @@ void __kmp_register_library_startup(void) {
 
     /* Wait fot the model callback */
     LIBOMP_WAIT_THREAD (&thread_complete);
+
+    free (directives);
+    free (pcodes);
+    PMIX_INFO_FREE (reginfo, nreginfo);
+
+    /* Get the number of procs in this job on this node */
+    {
+        uint32_t        nprocs;
+        pmix_proc_t     proc;
+        pmix_value_t    *_val;
+
+        /* Ensure the data is received */
+        PMIX_PROC_CONSTRUCT (&proc);
+        (void)strncpy (proc.nspace, myproc.nspace, PMIX_MAX_NSLEN);
+        proc.rank = PMIX_RANK_WILDCARD;
+        PMIx_Fence (&proc, 1, NULL, 0);
+
+        rc = PMIx_Get (&proc, PMIX_LOCAL_SIZE, NULL, 0, &_val);
+        if (rc != PMIX_SUCCESS)
+        {
+            fprintf (stderr, "[%s:%s:%d:%d] PMIx_Get() failed (%d)\n", __FILE__, __func__, __LINE__, getpid(), rc);
+        }
+        else
+        {
+            if (_val->type != PMIX_UINT32)
+            {
+                fprintf (stderr, "[%s:%s:%d] ERROR: Incorrect type\n", __FILE__, __func__, __LINE__);
+            }
+            else
+            {
+                fprintf (stderr, "[%s:%s:%d] %d job procs are running on the node\n", __FILE__, __func__, __LINE__, (int)(_val->data.uint32));
+            }
+        }
+    }
   }
 
   while (!done) {
