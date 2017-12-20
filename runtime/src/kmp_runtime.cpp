@@ -4641,10 +4641,12 @@ static void __kmp_partition_places(kmp_team_t *team, int update_master_only) {
                 "bound to place %d partition = [%d,%d]\n",
                 proc_bind, __kmp_gtid_from_thread(team->t.t_threads[0]),
                 team->t.t_id, masters_place, first_place, last_place));
+    fprintf (stderr, "[%s:%s:%d:%6d] DBG: >>> ENTER %s()\n", __FILENAME__, __func__, __LINE__, (int)getpid(), __func__);
 
   switch (proc_bind) {
 
   case proc_bind_default:
+    fprintf (stderr, "[%s:%s:%d:%6d] DBG: %s() BINDING = PROC_BIND_DEFAULT\n", __FILENAME__, __func__, __LINE__, (int)getpid(), __func__);
     // serial teams might have the proc_bind policy set to proc_bind_default. It
     // doesn't matter, as we don't rebind master thread for any proc_bind policy
     KMP_DEBUG_ASSERT(team->t.t_nproc == 1);
@@ -4653,6 +4655,7 @@ static void __kmp_partition_places(kmp_team_t *team, int update_master_only) {
   case proc_bind_master: {
     int f;
     int n_th = team->t.t_nproc;
+    fprintf (stderr, "[%s:%s:%d:%6d] DBG: %s() BINDING = PROC_BIND_MASTER\n", __FILENAME__, __func__, __LINE__, (int)getpid(), __func__);
     for (f = 1; f < n_th; f++) {
       kmp_info_t *th = team->t.t_threads[f];
       KMP_DEBUG_ASSERT(th != NULL);
@@ -4671,6 +4674,7 @@ static void __kmp_partition_places(kmp_team_t *team, int update_master_only) {
     int f;
     int n_th = team->t.t_nproc;
     int n_places;
+    fprintf (stderr, "[%s:%s:%d:%6d] DBG: %s() BINDING = PROC_BIND_CLOSE\n", __FILENAME__, __func__, __LINE__, (int)getpid(), __func__);
     if (first_place <= last_place) {
       n_places = last_place - first_place + 1;
     } else {
@@ -4756,6 +4760,7 @@ static void __kmp_partition_places(kmp_team_t *team, int update_master_only) {
     int n_th = team->t.t_nproc;
     int n_places;
     int thidx;
+    fprintf (stderr, "[%s:%s:%d:%6d] DBG: %s() BINDING = PROC_BIND_SPREAD\n", __FILENAME__, __func__, __LINE__, (int)getpid(), __func__);
     if (first_place <= last_place) {
       n_places = last_place - first_place + 1;
     } else {
@@ -4874,9 +4879,11 @@ static void __kmp_partition_places(kmp_team_t *team, int update_master_only) {
   } break;
 
   default:
+    fprintf (stderr, "[%s:%s:%d:%6d] DBG: %s() BINDING = DEFAULT\n", __FILENAME__, __func__, __LINE__, (int)getpid(), __func__);
     break;
   }
 
+    fprintf (stderr, "[%s:%s:%d:%6d] DBG: <<< EXIT  %s()\n", __FILENAME__, __func__, __LINE__, (int)getpid(), __func__);
   KA_TRACE(20, ("__kmp_partition_places: exit T#%d\n", team->t.t_id));
 }
 
