@@ -29,6 +29,8 @@
 
 #include <pmix.h>
 
+#define __FILENAME__ (strrchr(__FILE__, '/') ? strrchr(__FILE__, '/') + 1 : __FILE__)
+
 #if OMPT_SUPPORT
 #include "ompt-specific.h"
 #endif
@@ -181,11 +183,11 @@ static void evthdl_fn (size_t evhdlr_registration_id,
             strcmp (info[i].key, "pmix.mld.vrs") == 0 ||
             strcmp (info[i].key, "pmix.threads") == 0)
         {
-            fprintf (stdout, "[%s:%s:%d] Key: %s/%s\n", __FILE__, __func__, __LINE__, info[i].key, info[i].value.data.string);
+            fprintf (stdout, "[%s:%s:%d] Key: %s/%s\n", __FILENAME__, __func__, __LINE__, info[i].key, info[i].value.data.string);
         }
         else
         {
-            fprintf (stdout, "[%s:%s:%d] Key: %s\n", __FILE__, __func__, __LINE__, info[i].key);
+            fprintf (stdout, "[%s:%s:%d] Key: %s\n", __FILENAME__, __func__, __LINE__, info[i].key);
         }
     }
 
@@ -6472,7 +6474,7 @@ void __kmp_register_library_startup(void) {
         }
         else
         {
-            //fprintf (stderr, "[%s:%s:%d] Ncpus: %d\n", __FILE__, __func__, __LINE__, (int)lookup_pdata[0].value.data.uint8);
+            fprintf (stderr, "[%s:%s:%d] Ncpus: %d\n", __FILENAME__, __func__, __LINE__, (int)lookup_pdata[0].value.data.uint8);
             _n_local_cpus = (int)lookup_pdata[0].value.data.uint8;
             _n_local_cpus_set = true;
         }
