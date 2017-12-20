@@ -29,6 +29,8 @@
 
 #include <pmix.h>
 
+#define __FILENAME__ (strrchr(__FILE__, '/') ? strrchr(__FILE__, '/') + 1 : __FILE__)
+
 #if OMPT_SUPPORT
 #include "ompt-specific.h"
 #endif
@@ -72,6 +74,7 @@ char const __kmp_version_lock[] =
 #define PMIX_MODEL_LIBRARY_NAME     "pmix.mdl.name"         // (char*) programming model implementation ID (e.g., "OpenMPI" or "MPICH")
 #define PMIX_MODEL_LIBRARY_VERSION  "pmix.mld.vrs"          // (char*) programming model version string (e.g., "2.1.1")
 #define PMIX_THREADING_MODEL        "pmix.threads"          // (char*) threading model used (e.g., "pthreads")
+#define PMIX_LOCAL_PEERS            "pmix.lpeers"           // (char*) comma-delimited string of ranks on this node within the specified nspace
 #define DUMMY_VALUE                 "dummyvalue"
 
 typedef struct {
@@ -86,6 +89,13 @@ static bool _n_local_ranks_set = false;
 static bool _n_local_cpus_set = false;
 static int _n_local_ranks = 0;
 static int _n_local_cpus = 0;
+static int *_local_ranks = NULL;
+static char *_local_ranks_str = NULL;
+static bool _local_ranks_set = false;
+static int _local_myrank = -1;
+static bool _local_myrank_set = false;
+static int _local_place_offset = -1;
+static bool _local_place_offset_set = false;
 static char *_policy_threadspan;
 static bool _policy_threadspan_set = false;
 
@@ -181,11 +191,11 @@ static void evthdl_fn (size_t evhdlr_registration_id,
             strcmp (info[i].key, "pmix.mld.vrs") == 0 ||
             strcmp (info[i].key, "pmix.threads") == 0)
         {
-            fprintf (stdout, "[%s:%s:%d] Key: %s/%s\n", __FILE__, __func__, __LINE__, info[i].key, info[i].value.data.string);
+            fprintf (stdout, "[%s:%s:%d] Key: %s/%s\n", __FILENAME__, __func__, __LINE__, info[i].key, info[i].value.data.string);
         }
         else
         {
-            fprintf (stdout, "[%s:%s:%d] Key: %s\n", __FILE__, __func__, __LINE__, info[i].key);
+            fprintf (stdout, "[%s:%s:%d] Key: %s\n", __FILENAME__, __func__, __LINE__, info[i].key);
         }
     }
 
@@ -4631,10 +4641,12 @@ static void __kmp_partition_places(kmp_team_t *team, int update_master_only) {
                 "bound to place %d partition = [%d,%d]\n",
                 proc_bind, __kmp_gtid_from_thread(team->t.t_threads[0]),
                 team->t.t_id, masters_place, first_place, last_place));
+    fprintf (stderr, "[%s:%s:%d:%6d] DBG: >>> ENTER %s()\n", __FILENAME__, __func__, __LINE__, (int)getpid(), __func__);
 
   switch (proc_bind) {
 
   case proc_bind_default:
+    fprintf (stderr, "[%s:%s:%d:%6d] DBG: %s() BINDING = PROC_BIND_DEFAULT\n", __FILENAME__, __func__, __LINE__, (int)getpid(), __func__);
     // serial teams might have the proc_bind policy set to proc_bind_default. It
     // doesn't matter, as we don't rebind master thread for any proc_bind policy
     KMP_DEBUG_ASSERT(team->t.t_nproc == 1);
@@ -4643,6 +4655,7 @@ static void __kmp_partition_places(kmp_team_t *team, int update_master_only) {
   case proc_bind_master: {
     int f;
     int n_th = team->t.t_nproc;
+    fprintf (stderr, "[%s:%s:%d:%6d] DBG: %s() BINDING = PROC_BIND_MASTER\n", __FILENAME__, __func__, __LINE__, (int)getpid(), __func__);
     for (f = 1; f < n_th; f++) {
       kmp_info_t *th = team->t.t_threads[f];
       KMP_DEBUG_ASSERT(th != NULL);
@@ -4661,6 +4674,7 @@ static void __kmp_partition_places(kmp_team_t *team, int update_master_only) {
     int f;
     int n_th = team->t.t_nproc;
     int n_places;
+    fprintf (stderr, "[%s:%s:%d:%6d] DBG: %s() BINDING = PROC_BIND_CLOSE\n", __FILENAME__, __func__, __LINE__, (int)getpid(), __func__);
     if (first_place <= last_place) {
       n_places = last_place - first_place + 1;
     } else {
@@ -4746,6 +4760,7 @@ static void __kmp_partition_places(kmp_team_t *team, int update_master_only) {
     int n_th = team->t.t_nproc;
     int n_places;
     int thidx;
+    fprintf (stderr, "[%s:%s:%d:%6d] DBG: %s() BINDING = PROC_BIND_SPREAD\n", __FILENAME__, __func__, __LINE__, (int)getpid(), __func__);
     if (first_place <= last_place) {
       n_places = last_place - first_place + 1;
     } else {
@@ -4864,9 +4879,11 @@ static void __kmp_partition_places(kmp_team_t *team, int update_master_only) {
   } break;
 
   default:
+    fprintf (stderr, "[%s:%s:%d:%6d] DBG: %s() BINDING = DEFAULT\n", __FILENAME__, __func__, __LINE__, (int)getpid(), __func__);
     break;
   }
 
+    fprintf (stderr, "[%s:%s:%d:%6d] DBG: <<< EXIT  %s()\n", __FILENAME__, __func__, __LINE__, (int)getpid(), __func__);
   KA_TRACE(20, ("__kmp_partition_places: exit T#%d\n", team->t.t_id));
 }
 
@@ -6369,7 +6386,12 @@ void __kmp_register_library_startup(void) {
         {
             fprintf (stderr, "[%s:%s:%d] PMIx_Init() failed (%d)\n", __FILE__, __func__, __LINE__, rc);
         }
+
+        /* Set our rank (self) */
+        _local_myrank     = myproc.rank;
+        _local_myrank_set = true;
     }
+
 
     /* The following code could be simplified but reflect the Open MPI code to minimize
        the risk of misusing APIs and data structures. */
@@ -6422,12 +6444,81 @@ void __kmp_register_library_startup(void) {
             }
             else
             {
-                //fprintf (stderr, "[%s:%s:%d] %d job procs are running on the node\n", __FILE__, __func__, __LINE__, (int)(_val->data.uint32));
+                fprintf (stderr, "[%s:%s:%d] %d job procs are running on the node\n", __FILENAME__, __func__, __LINE__, (int)(_val->data.uint32));
                 _n_local_ranks = (int)(_val->data.uint32);
                 _n_local_ranks_set = true;
             }
         }
     }
+
+  #if 1   /* TJN: LOCAL-RANKS */
+    {
+        pmix_value_t    *_val;
+
+        /* Get list of ranks on local node */
+        rc = PMIx_Get(&proc, PMIX_LOCAL_PEERS, NULL, 0, &_val);
+        if (rc != PMIX_SUCCESS)
+        {
+            fprintf (stderr, "[%s:%s:%d:%d] PMIx_Get() failed (%d)\n", __FILE__, __func__, __LINE__, getpid(), rc);
+        }
+        else
+        {
+            if (_val->type != PMIX_STRING)
+            {
+                fprintf (stderr, "[%s:%s:%d] ERROR: Incorrect type\n", __FILE__, __func__, __LINE__);
+            }
+            else
+            {
+                //fprintf (stderr, "[%s:%s:%d] %s ranks running on the node\n", __FILENAME__, __func__, __LINE__, (char*)(_val->data.string));
+                _local_ranks_str = strdup((char*)(_val->data.string));
+
+                /* TJN: split string into int array of local ranks, which
+                 *      is used to help find our offset for placement    */
+                if (_n_local_ranks_set == false) {
+                    fprintf (stderr, "[%s:%s:%d] ERROR/BAD MISSING NUM-RANKS\n", __FILENAME__, __func__, __LINE__);
+                } else {
+                    _local_ranks = (int*)malloc(_n_local_ranks * sizeof(int));
+                    if (NULL == _local_ranks) {
+                        fprintf (stderr, "[%s:%s:%d] ERROR: malloc failed\n", __FILENAME__, __func__, __LINE__);
+                    } else {
+                        int idx;
+                        char *ptr=NULL;
+                        char *saveptr=NULL;
+                        char *token=NULL;
+                        // split string up
+                        for (idx=0, ptr=_local_ranks_str, saveptr=NULL;
+                             ;
+                             idx++, ptr=NULL) {
+                            token = strtok_r(ptr, ",", &saveptr);
+                            if (token == NULL)
+                                break;
+                            _local_ranks[idx] = atoi(token);
+                            //fprintf (stderr, "[%s:%s:%d] DBG: token=%s ranks[%d]=%d\n",
+                            //       __FILENAME__, __func__, __LINE__, token, idx, _local_ranks[idx]);
+                        }
+                        _local_ranks_set = true;
+                    } //malloc
+                } //ranks_set
+            } //pmix_string
+        } //PMIx_Get
+
+        //fprintf (stderr, "[%s:%s:%d] OMP-RT (PID: %d) myrank: %d\n", __FILENAME__, __func__, __LINE__, (int)getpid(), _local_myrank);
+
+        {
+            /* Find our placement offset (index) in local ranks array */
+            int idx;
+            for (idx=0; idx < _n_local_ranks; idx++) {
+                if (_local_myrank == _local_ranks[idx]) {
+                    _local_place_offset = idx;
+                    _local_place_offset_set = true;
+                    //fprintf (stderr, "[%s:%s:%d] OMP-RT myrank: %d PlaceOffset: %d\n", __FILENAME__, __func__, __LINE__, (int)getpid(), _local_myrank, idx);
+                    break;
+                }
+            }
+        }
+    }
+   #endif /* TJN: LOCAL-RANKS */
+
 
 #if 0
     /* Get the local cpuset */
@@ -6472,7 +6563,7 @@ void __kmp_register_library_startup(void) {
         }
         else
         {
-            //fprintf (stderr, "[%s:%s:%d] Ncpus: %d\n", __FILE__, __func__, __LINE__, (int)lookup_pdata[0].value.data.uint8);
+            fprintf (stderr, "[%s:%s:%d] Ncpus: %d\n", __FILENAME__, __func__, __LINE__, (int)lookup_pdata[0].value.data.uint8);
             _n_local_cpus = (int)lookup_pdata[0].value.data.uint8;
             _n_local_cpus_set = true;
         }
@@ -6501,6 +6592,61 @@ void __kmp_register_library_startup(void) {
             _policy_threadspan_set = true;
         }
     }
+
+    { // Place-stuff
+        int stride, my_start_place, my_finish_place;
+        int idx, cnt;
+        char *tmp_str = NULL;
+
+        /* Setup Places Info (assuming consecutive core based places) */
+        if (true == _local_place_offset_set) {
+            /* Split local cores (cpus) among ranks */
+            stride = _n_local_cpus / _n_local_ranks;
+
+            /* Start of this rank placement set of cores */
+            my_start_place  = _local_place_offset * stride;
+
+            /* End of this rank placement set of cores */
+            my_finish_place = ((_local_place_offset * stride) + stride) - 1;
+
+            //fprintf (stderr, "[%s:%s:%d] OMP-RT %d  start: %d  finish: %d stride: %d\n",
+            //           __FILENAME__, __func__, __LINE__, _local_myrank,
+            //           my_start_place, my_finish_place, stride);
+
+            /* XXX: For now just show this info */
+            for (idx=my_start_place, cnt=0; idx <= my_finish_place; idx++) {
+                if (tmp_str == NULL) {
+                    asprintf(&tmp_str, "{%d}", idx);
+                } else {
+                    asprintf(&tmp_str, "%s, {%d}", tmp_str, idx);
+                }
+            }
+
+#if 1
+            /* Set rank specific places (avoid override if OMP_PLACES already defined) */
+            if (NULL != getenv("OMP_PLACES")) {
+                fprintf (stderr, "[%s:%s:%d] OMP-RT (pid:%d) Rank: %d OMP_PLACES ALREADY SET\n",
+                         __FILENAME__, __func__, __LINE__, (int)getpid(), _local_myrank);
+            } else {
+                fprintf (stderr, "[%s:%s:%d] OMP-RT (pid:%d) Rank: %d OVERRIDE OMP_PLACES INFO (%s)\n",
+                         __FILENAME__, __func__, __LINE__, (int)getpid(), _local_myrank, tmp_str);
+                setenv("OMP_PLACES", tmp_str, 1);
+            }
+#endif
+
+            fprintf (stderr, "[%s:%s:%d] OMP-RT (pid:%d) Rank: %d  places: %s\n",
+                         __FILENAME__, __func__, __LINE__, (int)getpid(), _local_myrank, tmp_str);
+
+            if (NULL != tmp_str)
+                free(tmp_str);
+
+        } else {
+            fprintf (stderr, "[%s:%s:%d] WARNING MISSING INFO PLACMENT STUFF SKIPPED!\n", __FILENAME__, __func__, __LINE__);
+        }
+
+    } // Place-stuff
+
+
   }
 
   while (!done) {
