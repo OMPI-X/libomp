@@ -2401,6 +2401,7 @@ static kmp_affin_mask_t *__kmp_create_masks(unsigned *maxIndex,
   unsigned leader = 0;
   Address *leaderAddr = &(address2os[0].first);
   kmp_affin_mask_t *sum;
+
   KMP_CPU_ALLOC_ON_STACK(sum);
   KMP_CPU_ZERO(sum);
   KMP_CPU_SET(address2os[0].second, sum);
@@ -4127,7 +4128,12 @@ static void __kmp_aux_affinity_initialize(void) {
   kmp_affin_mask_t *osId2Mask =
       __kmp_create_masks(&maxIndex, &numUnique, address2os, __kmp_avail_proc);
   if (__kmp_affinity_gran_levels == 0) {
-    KMP_DEBUG_ASSERT((int)numUnique == __kmp_avail_proc);
+    // If resources are partitioned between runtimes, we cannot assume all procs can be used,
+    // instead the number of procs is equal to the partition allocated to this OpenMP runtime.
+    if (partition_size == 0)
+      KMP_DEBUG_ASSERT((int)numUnique == __kmp_avail_proc);
+    else
+      KMP_DEBUG_ASSERT((int)numUnique == partition_size);
   }
 
   // Set the childNums vector in all Address objects. This must be done before
@@ -4418,13 +4424,33 @@ void __kmp_affinity_set_init_mask(int gtid, int isa_root) {
       }
 #endif
       KMP_ASSERT(__kmp_affin_fullMask != NULL);
-      i = KMP_PLACE_ALL;
-      mask = __kmp_affin_fullMask;
+      // If the OpenMP runtime is being coordinated with other runtimes,
+      // e.g., MPI, we cannot assume that all resources available can be used.
+      if (partition_size == 0)
+      {
+        i = KMP_PLACE_ALL;
+        mask = __kmp_affin_fullMask;
+      }
+      else
+      {
+        i = (_local_rank_id * partition_size);
+        mask = KMP_CPU_INDEX(__kmp_affinity_masks, i);
+      }
     } else {
       // int i = some hash function or just a counter that doesn't
       // always start at 0.  Use gtid for now.
       KMP_DEBUG_ASSERT(__kmp_affinity_num_masks > 0);
-      i = (gtid + __kmp_affinity_offset) % __kmp_affinity_num_masks;
+      // Based on the current code, i is used to set the CPU mask to be
+      // used to spawn threads. If OpenMP is coordinating with other runtimes
+      // the index is not 0 but whereever starts the partition allocated to
+      // OpenMP
+      if (partition_size == 0)
+        i = (gtid + __kmp_affinity_offset) % __kmp_affinity_num_masks;
+      else
+      {
+        i = (_local_rank_id * partition_size);
+      }
+
       mask = KMP_CPU_INDEX(__kmp_affinity_masks, i);
     }
   }

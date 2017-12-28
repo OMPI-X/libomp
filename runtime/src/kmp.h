@@ -3834,6 +3834,18 @@ KMP_EXPORT void KMPC_CONVENTION kmpc_set_library(int);
 KMP_EXPORT void KMPC_CONVENTION kmpc_set_defaults(char const *);
 KMP_EXPORT void KMPC_CONVENTION kmpc_set_disp_num_buffers(int);
 
+/* PMIx coordination related variables */
+extern bool _n_local_ranks_set; 
+extern bool _n_local_cpus_set; 
+extern int  _n_local_ranks;
+extern int  _n_local_cpus;
+extern char *_policy_threadspan;
+extern bool _policy_threadspan_set; 
+extern char *_list_ranks;
+extern int  _myrank;
+extern int  _local_rank_id;
+extern int  partition_size;
+
 #ifdef __cplusplus
 }
 #endif
