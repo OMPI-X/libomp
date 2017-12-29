@@ -2401,7 +2401,6 @@ static kmp_affin_mask_t *__kmp_create_masks(unsigned *maxIndex,
   unsigned leader = 0;
   Address *leaderAddr = &(address2os[0].first);
   kmp_affin_mask_t *sum;
-
   KMP_CPU_ALLOC_ON_STACK(sum);
   KMP_CPU_ZERO(sum);
   KMP_CPU_SET(address2os[0].second, sum);
