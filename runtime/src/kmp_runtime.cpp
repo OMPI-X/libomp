@@ -82,12 +82,18 @@ typedef struct {
 
 pmix_status_t code = PMIX_MODEL_DECLARED;
 static libomp_lock_t thread_complete;
-static bool _n_local_ranks_set = false;
-static bool _n_local_cpus_set = false;
-static int _n_local_ranks = 0;
-static int _n_local_cpus = 0;
-static char *_policy_threadspan;
-static bool _policy_threadspan_set = false;
+
+/* Global variables to store data gathered through PMIx */
+bool _n_local_ranks_set = false;
+bool _n_local_cpus_set = false;
+int  _n_local_ranks = 0;
+int  _n_local_cpus = 0;
+char *_policy_threadspan;
+bool _policy_threadspan_set = false;
+char *_list_ranks = NULL;
+int  _myrank;
+int  _local_rank_id = -1;
+int  partition_size = 0;
 
 /* Equivalent of OPAL_ACQUIRE_OBJECT */
 #define LIBOMP_ACQUIRE_OBJECT(o)    do {} while (0)
@@ -173,7 +179,6 @@ static void evthdl_fn (size_t evhdlr_registration_id,
 {
     int i;
 
-    fprintf (stdout, "Number of info keys: %d\n", ninfo);
     for (i = 0; i < ninfo; i++)
     {
         if (strcmp (info[i].key, "pmix.pgm.model") == 0 ||
@@ -181,11 +186,11 @@ static void evthdl_fn (size_t evhdlr_registration_id,
             strcmp (info[i].key, "pmix.mld.vrs") == 0 ||
             strcmp (info[i].key, "pmix.threads") == 0)
         {
-            fprintf (stdout, "[%s:%s:%d] Key: %s/%s\n", __FILE__, __func__, __LINE__, info[i].key, info[i].value.data.string);
+            KA_TRACE (100, ("[%s:%s:%d] Key: %s/%s\n", __FILE__, __func__, __LINE__, info[i].key, info[i].value.data.string));
         }
         else
         {
-            fprintf (stdout, "[%s:%s:%d] Key: %s\n", __FILE__, __func__, __LINE__, info[i].key);
+            KA_TRACE (100, ("[%s:%s:%d] Key: %s\n", __FILE__, __func__, __LINE__, info[i].key));
         }
     }
 
@@ -1772,6 +1777,9 @@ int __kmp_fork_call(ident_t *loc, int gtid,
           _policy_threadspan_set == true && strcmp (_policy_threadspan, "max") == 0)
       {
         nthreads = _n_local_cpus / _n_local_ranks - 1;
+        // Safe-guard
+        if (nthreads <= 0)
+            nthreads = 2;
       }
       else
       {
@@ -4616,7 +4624,6 @@ __kmp_set_thread_affinity_mask_full_tmp(kmp_affin_mask_t *old_mask) {
 // thread's partition, and binds each worker to a thread in their partition.
 // The master thread's partition should already include its current binding.
 static void __kmp_partition_places(kmp_team_t *team, int update_master_only) {
-  // GV: Sounds like a place where we could get data from PMIx so we can define places being aware of MPI
   // Copy the master thread's place partion to the team struct
   kmp_info_t *master_th = team->t.t_threads[0];
   KMP_DEBUG_ASSERT(master_th != NULL);
@@ -4626,6 +4633,24 @@ static void __kmp_partition_places(kmp_team_t *team, int update_master_only) {
   int masters_place = master_th->th.th_current_place;
   team->t.t_first_place = first_place;
   team->t.t_last_place = last_place;
+
+  if (_n_local_ranks_set == true &&
+      _n_local_cpus_set == true &&
+      _policy_threadspan_set == true &&
+      strcmp (_policy_threadspan, "max") == 0) // &&
+//      __kmp_affinity_gran == affinity_gran_thread) // for now all affinity
+// policies are supposed to be applicable, however only OMP_PLACES=threads has been
+// tested and may need to be explicitly spelled out
+  {
+    if (partition_size == 0)
+        partition_size = __kmp_avail_proc / _n_local_ranks;
+    first_place = partition_size * _local_rank_id;
+    last_place = first_place + partition_size - 1;
+    masters_place = master_th->th.th_current_place = first_place;
+    team->t.t_first_place = first_place;
+    team->t.t_last_place = last_place;
+  }
+
 
   KA_TRACE(20, ("__kmp_partition_places: enter: proc_bind = %d T#%d(%d:0) "
                 "bound to place %d partition = [%d,%d]\n",
@@ -4781,7 +4806,9 @@ static void __kmp_partition_places(kmp_team_t *team, int update_master_only) {
         if (rem && (gap_ct == gap)) {
           if (place == last_place) {
             place = first_place;
-          } else if (place == (int)(__kmp_affinity_num_masks - 1)) {
+          } else if (partition_size == 0 && place == (int)(__kmp_affinity_num_masks - 1)) {
+            // Valid only if OpenMP is running in standalone mode (i.e., no coordination
+            // with other runtimes)
             place = 0;
           } else {
             place++;
@@ -4833,7 +4860,9 @@ static void __kmp_partition_places(kmp_team_t *team, int update_master_only) {
           // we added an extra thread to this place; move on to next place
           if (place == last_place) {
             place = first_place;
-          } else if (place == (int)(__kmp_affinity_num_masks - 1)) {
+          } else if (partition_size == 0 && place == (int)(__kmp_affinity_num_masks - 1)) {
+            // Valid only if OpenMP is running in standalone mode (i.e., no coordination
+            // with other runtimes)
             place = 0;
           } else {
             place++;
@@ -6328,11 +6357,11 @@ void __kmp_register_library_startup(void) {
     int                 rc;
     pmix_proc_t         myproc;
     mydata_t            *omp_data;
-    char                *omp_model      = "OpenMP";
-    char                *omp_modelname  = "LLVM";
-    char                *omp_version    = "50";
+    const char          *omp_model      = "OpenMP";
+    const char          *omp_modelname  = "LLVM";
+    const char          *omp_version    = "50";
     pmix_proc_t         proc;
-    char                *pmix_code      = "pmix.evname";
+    const char          *pmix_code      = "pmix.evname";
     pmix_status_t       *pcodes;
     size_t              ncodes          = 1;
     libomp_pmix_value_t *directives;
@@ -6340,7 +6369,7 @@ void __kmp_register_library_startup(void) {
     pmix_info_t         *reginfo;
     size_t              nreginfo        = 1;
     libomp_lock_t       lock;
-    char                *mpi_key        = "MPI-Model-Declarations";
+    const char          *mpi_key        = "MPI-Model-Declarations";
 
     /* GV: Free this at some point? */
     LIBOMP_CONSTRUCT_LOCK (&thread_complete);
@@ -6367,7 +6396,11 @@ void __kmp_register_library_startup(void) {
         rc = PMIx_Init (&myproc, omp_data->info, omp_data->ninfo);
         if (rc != PMIX_SUCCESS)
         {
-            fprintf (stderr, "[%s:%s:%d] PMIx_Init() failed (%d)\n", __FILE__, __func__, __LINE__, rc);
+            fprintf (stderr, "[%s:%s:%d] ERROR: PMIx_Init() failed (%d)\n", __FILE__, __func__, __LINE__, rc);
+        }
+        else
+        {
+            _myrank = myproc.rank;
         }
     }
 
@@ -6412,7 +6445,7 @@ void __kmp_register_library_startup(void) {
         rc = PMIx_Get (&proc, PMIX_LOCAL_SIZE, NULL, 0, &_val);
         if (rc != PMIX_SUCCESS)
         {
-            fprintf (stderr, "[%s:%s:%d:%d] PMIx_Get() failed (%d)\n", __FILE__, __func__, __LINE__, getpid(), rc);
+            fprintf (stderr, "[%s:%s:%d:%d] ERROR: PMIx_Get() failed (%d)\n", __FILE__, __func__, __LINE__, getpid(), rc);
         }
         else
         {
@@ -6422,14 +6455,55 @@ void __kmp_register_library_startup(void) {
             }
             else
             {
-                //fprintf (stderr, "[%s:%s:%d] %d job procs are running on the node\n", __FILE__, __func__, __LINE__, (int)(_val->data.uint32));
+                KA_TRACE (100, ("[%s:%s:%d] %d job procs are running on the node\n", __FILE__, __func__, __LINE__, (int)(_val->data.uint32)));
                 _n_local_ranks = (int)(_val->data.uint32);
                 _n_local_ranks_set = true;
             }
         }
     }
 
+    /* Get list of all ranks running on the node so we can figure out the "ranking" of the local ranks.
+       For instance, if i am rank 3 and ranks (1,3,6) are running locally, i am the 2sd local rank.
+       This data is used to partition the resources without overlap between OpenMP "domains" running
+       under different MPI ranks. */
+    {
+        pmix_value_t *_val;
+
+        rc = PMIx_Get (&proc, PMIX_LOCAL_PEERS, NULL, 0, &_val);
+        if (rc != PMIX_SUCCESS)
+        {
+            fprintf (stderr, "[%s:%s:%d:%d] ERROR: PMIx_Get() failed (%d)\n", __FILE__, __func__, __LINE__, getpid(), rc);
+        }
+        else
+        {
+            if (_val->type != PMIX_STRING)
+            {
+                fprintf (stderr, "[%s:%s:%d] ERROR: Incorrect type\n", __FILE__, __func__, __LINE__);
+            }
+            else
+            {
+                _list_ranks = strdup (_val->data.string);
+                {
+                    using namespace std;
+                    char *tok;
+                    int _n = 0;
+                    tok = strtok (_list_ranks, ",");
+                    while (tok != NULL)
+                    {
+                        if (atoi(tok) == _myrank)
+                        {
+                            _local_rank_id = _n;
+                        }
+                        _n ++;
+                        tok = strtok (NULL, ",");
+                    }
+                }
+            }
+        }
+    }
+
 #if 0
+    It would be interesting to use the LOCAL_CPUSETS to do partitionning but at the moment, some testing is not relying on a fully featured RM and therefore we cannot assume that this info is available.
     /* Get the local cpuset */
     {
         char            *local_cpusets;
@@ -6468,11 +6542,11 @@ void __kmp_register_library_startup(void) {
         rc = PMIx_Lookup (lookup_pdata, 1, lookup_info, 1);
         if (rc != PMIX_SUCCESS)
         {
-            fprintf (stderr, "[%s:%s:%d:%d] PMIx_Lookup() failed (%d)\n", __FILE__, __func__, __LINE__, getpid(), rc);
+            fprintf (stderr, "[%s:%s:%d:%d] ERROR: PMIx_Lookup() failed (%d)\n", __FILE__, __func__, __LINE__, getpid(), rc);
         }
         else
         {
-            //fprintf (stderr, "[%s:%s:%d] Ncpus: %d\n", __FILE__, __func__, __LINE__, (int)lookup_pdata[0].value.data.uint8);
+            KA_TRACE (100, ("[%s:%s:%d] Ncpus: %d\n", __FILE__, __func__, __LINE__, (int)lookup_pdata[0].value.data.uint8));
             _n_local_cpus = (int)lookup_pdata[0].value.data.uint8;
             _n_local_cpus_set = true;
         }
@@ -6492,11 +6566,11 @@ void __kmp_register_library_startup(void) {
         rc = PMIx_Lookup (lookup_pdata, 1, lookup_info, 1);
         if (rc != PMIX_SUCCESS)
         {
-            fprintf (stderr, "[%s:%s:%d:%d] PMIx_Lookup() failed (%d)\n", __FILE__, __func__, __LINE__, getpid(), rc);
+            fprintf (stderr, "[%s:%s:%d:%d] ERROR: PMIx_Lookup() failed (%d)\n", __FILE__, __func__, __LINE__, getpid(), rc);
         }
         else
         {
-            //fprintf (stderr, "[%s:%s:%d] Ncpus: %d\n", __FILE__, __func__, __LINE__, (int)lookup_pdata[0].value.data.uint8);
+            KA_TRACE (100, ("[%s:%s:%d] Ncpus: %d\n", __FILE__, __func__, __LINE__, (int)lookup_pdata[0].value.data.uint8));
             _policy_threadspan = strdup (lookup_pdata[0].value.data.string);
             _policy_threadspan_set = true;
         }
