@@ -12,12 +12,6 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include <string>
-#include <sstream>
-#include <vector>
-#include <iterator>
-#include <iostream>
-
 #include "kmp.h"
 #include "kmp_affinity.h"
 #include "kmp_atomic.h"
