@@ -4826,6 +4826,7 @@ static void __kmp_partition_places(kmp_team_t *team, int update_master_only) {
         } else {
           place++;
         }
+
         KA_TRACE(100, ("__kmp_partition_places: spread: T#%d(%d:%d) place %d "
                        "partition = [%d,%d]\n",
                        __kmp_gtid_from_thread(team->t.t_threads[f]),
