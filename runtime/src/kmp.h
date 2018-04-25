@@ -25,6 +25,17 @@
    the Altix.  Requires user code to be linked with -lrt. */
 //#define FIX_SGI_CLOCK
 
+/* Defines for runtime coordination */
+#define COORD_POLICY_BASE	(0)	/* Internal use only */
+enum {
+	RUNTIME_COORD_POLICY_NONE		= (COORD_POLICY_BASE),
+	RUNTIME_COORD_POLICY_MAX		= (COORD_POLICY_BASE + 1),
+};
+
+/* Used to specify the coordination policy that is selected at any given time
+   The possible values are defined by the enum previously defined. */
+extern int runtime_coord_policy;
+
 /* Defines for OpenMP 3.0 tasking and auto scheduling */
 
 #ifndef KMP_STATIC_STEAL_ENABLED

@@ -4129,10 +4129,10 @@ static void __kmp_aux_affinity_initialize(void) {
   if (__kmp_affinity_gran_levels == 0) {
     // If resources are partitioned between runtimes, we cannot assume all procs can be used,
     // instead the number of procs is equal to the partition allocated to this OpenMP runtime.
-    if (partition_size == 0)
-      KMP_DEBUG_ASSERT((int)numUnique == __kmp_avail_proc);
-    else
+    if (runtime_coord_policy == RUNTIME_COORD_POLICY_MAX)
       KMP_DEBUG_ASSERT((int)numUnique == partition_size);
+    else
+      KMP_DEBUG_ASSERT((int)numUnique == __kmp_avail_proc);
   }
 
   // Set the childNums vector in all Address objects. This must be done before
@@ -4425,15 +4425,15 @@ void __kmp_affinity_set_init_mask(int gtid, int isa_root) {
       KMP_ASSERT(__kmp_affin_fullMask != NULL);
       // If the OpenMP runtime is being coordinated with other runtimes,
       // e.g., MPI, we cannot assume that all resources available can be used.
-      if (partition_size == 0)
-      {
-        i = KMP_PLACE_ALL;
-        mask = __kmp_affin_fullMask;
-      }
-      else
+      if (runtime_coord_policy == RUNTIME_COORD_POLICY_MAX)
       {
         i = (_local_rank_id * partition_size);
         mask = KMP_CPU_INDEX(__kmp_affinity_masks, i);
+      }
+      else
+      {
+        i = KMP_PLACE_ALL;
+        mask = __kmp_affin_fullMask;
       }
     } else {
       // int i = some hash function or just a counter that doesn't
@@ -4443,12 +4443,12 @@ void __kmp_affinity_set_init_mask(int gtid, int isa_root) {
       // used to spawn threads. If OpenMP is coordinating with other runtimes
       // the index is not 0 but whereever starts the partition allocated to
       // OpenMP
-      if (partition_size == 0)
-        i = (gtid + __kmp_affinity_offset) % __kmp_affinity_num_masks;
-      else
+      if (runtime_coord_policy == RUNTIME_COORD_POLICY_MAX)
       {
         i = (_local_rank_id * partition_size);
       }
+      else
+        i = (gtid + __kmp_affinity_offset) % __kmp_affinity_num_masks;
 
       mask = KMP_CPU_INDEX(__kmp_affinity_masks, i);
     }

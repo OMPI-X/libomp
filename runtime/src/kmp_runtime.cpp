@@ -94,6 +94,7 @@ char *_list_ranks = NULL;
 int  _myrank;
 int  _local_rank_id = -1;
 int  partition_size = 0;
+int  runtime_coord_policy = RUNTIME_COORD_POLICY_NONE;
 
 /* Equivalent of OPAL_ACQUIRE_OBJECT */
 #define LIBOMP_ACQUIRE_OBJECT(o)    do {} while (0)
@@ -1773,8 +1774,7 @@ int __kmp_fork_call(ident_t *loc, int gtid,
       int enter_teams = ((ap == NULL && active_level == 0) ||
                          (ap && teams_level > 0 && teams_level == level));
 #endif
-      if (_n_local_ranks_set == true && _n_local_cpus_set == true &&
-          _policy_threadspan_set == true && strcmp (_policy_threadspan, "max") == 0)
+      if (runtime_coord_policy == RUNTIME_COORD_POLICY_MAX)
       {
         nthreads = _n_local_cpus / _n_local_ranks - 1;
         // Safe-guard
@@ -4634,13 +4634,7 @@ static void __kmp_partition_places(kmp_team_t *team, int update_master_only) {
   team->t.t_first_place = first_place;
   team->t.t_last_place = last_place;
 
-  if (_n_local_ranks_set == true &&
-      _n_local_cpus_set == true &&
-      _policy_threadspan_set == true &&
-      strcmp (_policy_threadspan, "max") == 0) // &&
-//      __kmp_affinity_gran == affinity_gran_thread) // for now all affinity
-// policies are supposed to be applicable, however only OMP_PLACES=threads has been
-// tested and may need to be explicitly spelled out
+  if (runtime_coord_policy == RUNTIME_COORD_POLICY_MAX)
   {
     if (partition_size == 0)
         partition_size = __kmp_avail_proc / _n_local_ranks;
@@ -4806,7 +4800,7 @@ static void __kmp_partition_places(kmp_team_t *team, int update_master_only) {
         if (rem && (gap_ct == gap)) {
           if (place == last_place) {
             place = first_place;
-          } else if (partition_size == 0 && place == (int)(__kmp_affinity_num_masks - 1)) {
+          } else if (runtime_coord_policy == RUNTIME_COORD_POLICY_NONE && place == (int)(__kmp_affinity_num_masks - 1)) {
             // Valid only if OpenMP is running in standalone mode (i.e., no coordination
             // with other runtimes)
             place = 0;
@@ -4860,7 +4854,7 @@ static void __kmp_partition_places(kmp_team_t *team, int update_master_only) {
           // we added an extra thread to this place; move on to next place
           if (place == last_place) {
             place = first_place;
-          } else if (partition_size == 0 && place == (int)(__kmp_affinity_num_masks - 1)) {
+          } else if (runtime_coord_policy == RUNTIME_COORD_POLICY_NONE && place == (int)(__kmp_affinity_num_masks - 1)) {
             // Valid only if OpenMP is running in standalone mode (i.e., no coordination
             // with other runtimes)
             place = 0;
@@ -6573,6 +6567,16 @@ void __kmp_register_library_startup(void) {
             KA_TRACE (100, ("[%s:%s:%d] Ncpus: %d\n", __FILE__, __func__, __LINE__, (int)lookup_pdata[0].value.data.uint8));
             _policy_threadspan = strdup (lookup_pdata[0].value.data.string);
             _policy_threadspan_set = true;
+        }
+    }
+
+    /* Logic to decide whether a runtime coordination policy must be activated */
+    {
+        if (_n_local_ranks_set == true &&_n_local_cpus_set == true &&
+            _n_local_ranks == _n_local_cpus &&
+            _policy_threadspan_set == true && strcmp (_policy_threadspan, "max") == 0)
+        {
+            runtime_coord_policy = RUNTIME_COORD_POLICY_MAX;
         }
     }
   }
